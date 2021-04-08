@@ -70,13 +70,14 @@ message:
 '''
 
 from ansible.module_utils.basic import AnsibleModule
-
+import requests
+import sh
 
 def run_module():
     # define available arguments/parameters a user can pass to the module
     module_args = dict(
-        name=dict(type='str', required=True),
-        new=dict(type='bool', required=False, default=False)
+        url=dict(type='str', required=True),
+        retries_num=dict(type='int', required=False, default=5)
     )
 
     # seed the result dict in the object
@@ -107,19 +108,65 @@ def run_module():
 
     # manipulate or modify the state as needed (this is going to be the
     # part where your module will do what it needs to do)
-    result['original_message'] = module.params['name']
-    result['message'] = 'goodbye'
+    url = module.params['url']
+    retries_num = module.params['retries_num']
+    image_name = "image"
+
+    try:
+        sh.mkdir("/tmp/os_create_tmp")
+    except sh.ErrorReturnCode_1:
+        pass
+    except sh.ErrorReturnCode:
+        module.fail_json(msg="Failed to create tmp directory", **result)
+
+    # Downloading image
+    with open(r'/tmp/os_create_tmp/'+image_name,"wb") as local_image:
+        # Try getting header of remote image
+
+        header_failed = True
+        for i in range(retries_num):
+            remote_image = requests.get(url, stream=True)
+            if remote_image.ok:
+                header_failed = False
+                break
+
+        if header_failed:
+            module.fail_json(msg='Unable to get remote image in ' + str(retries_num) + ' attempts', **result)
+
+        # Check we are the only instance
+        grep_out = 0
+        try:
+            grep_out = sh.grep(sh.df(), "/tmp/os_create_tmp", "-c")
+        except sh.ErrorReturnCode_1:
+            grep_out = 1
+        if grep_out == 0:
+            module.fail_json(msg="Can't mount temporary filesystem: is there another instance of module?", **result)
+        # Mounting temporary filesystem
+        try:
+            with sh.contrib.sudo:
+                out = (sh.mount("tmpfs", "/tmp/os_create_tmp", t="tmpfs", o="size=1000000000"))#+str(1000000 + int(remote_image.headers['Content-length']))))
+        except sh.ErrorReturnCode:
+            module.fail_json(msg="Failed to mount temporary filesystem", **result)
+
+        # Downloading image Content
+        local_image.write(remote_image.content)
+    sh.umount("/mnt/os_create_tmp")
+
+
+    result['original_message'] = module.params['url']
+    result['message'] = 'Successfully download an image'
 
     # use whatever logic you need to determine whether or not this module
     # made any modifications to your target
-    if module.params['new']:
-        result['changed'] = True
+    # if module.params['new']:
+    result['changed'] = True
 
     # during the execution of the module, if there is an exception or a
     # conditional state that effectively causes a failure, run
     # AnsibleModule.fail_json() to pass in the message and the result
-    if module.params['name'] == 'fail me':
-        module.fail_json(msg='You requested this to fail', **result)
+
+    # if module.params['name'] == 'fail me':
+        # module.fail_json(msg='You requested this to fail', **result)
 
     # in the event of a successful module execution, you will want to
     # simple AnsibleModule.exit_json(), passing the key/value results
