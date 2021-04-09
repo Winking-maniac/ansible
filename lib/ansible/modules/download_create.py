@@ -72,6 +72,7 @@ message:
 from ansible.module_utils.basic import AnsibleModule
 import requests
 import sh
+from progress.bar import Bar
 
 def run_module():
     # define available arguments/parameters a user can pass to the module
@@ -121,6 +122,7 @@ def run_module():
 
     # Downloading image
     with open(r'/tmp/os_create_tmp/'+image_name,"wb") as local_image:
+
         # Try getting header of remote image
 
         header_failed = True
@@ -144,13 +146,19 @@ def run_module():
         # Mounting temporary filesystem
         try:
             with sh.contrib.sudo:
-                out = (sh.mount("tmpfs", "/tmp/os_create_tmp", t="tmpfs", o="size=1000000000"))#+str(1000000 + int(remote_image.headers['Content-length']))))
+                out = sh.mount("tmpfs", "/tmp/os_create_tmp", t="tmpfs", \
+                        o="size="+str(1000000 + int(remote_image.headers['Content-length'])))
         except sh.ErrorReturnCode:
-            module.fail_json(msg="Failed to mount temporary filesystem", **result)
-
+                print(out)
+                module.fail_json(msg="Failed to mount temporary filesystem", **result)
         # Downloading image Content
-        local_image.write(remote_image.content)
-    sh.umount("/mnt/os_create_tmp")
+        with Bar('Downloading', max=int(remote_image.headers['Content-length']), suffix = '%(percent).1f%% - %(eta)ds') as bar:
+            for chunk in remote_image.iter_content(chunk_size = 1000000):
+                bar.next(n=len(chunk))
+                local_image.write(chunk)
+
+    with sh.contrib.sudo:
+        sh.umount("/tmp/os_create_tmp")
 
 
     result['original_message'] = module.params['url']
