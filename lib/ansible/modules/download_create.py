@@ -3,7 +3,15 @@
 # Copyright: (c) 2018, Terry Jones <terry.jones@example.org>
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 from __future__ import (absolute_import, division, print_function)
+
+import openstack
+from progress.bar import Bar
+from progress.spinner import Spinner
+import sh
+import requests
+from ansible.module_utils.basic import AnsibleModule
 __metaclass__ = type
+import time
 
 DOCUMENTATION = r'''
 ---
@@ -69,10 +77,6 @@ message:
     sample: 'goodbye'
 '''
 
-from ansible.module_utils.basic import AnsibleModule
-import requests
-import sh
-from progress.bar import Bar
 
 def run_module():
     # define available arguments/parameters a user can pass to the module
@@ -120,46 +124,62 @@ def run_module():
     except sh.ErrorReturnCode:
         module.fail_json(msg="Failed to create tmp directory", **result)
 
-    # Downloading image
-    with open(r'/tmp/os_create_tmp/'+image_name,"wb") as local_image:
+    # Try getting header of remote image
 
-        # Try getting header of remote image
+    header_failed = True
+    for i in range(retries_num):
+        remote_image = requests.get(url, stream=True)
+        if remote_image.ok:
+            header_failed = False
+            break
 
-        header_failed = True
-        for i in range(retries_num):
-            remote_image = requests.get(url, stream=True)
-            if remote_image.ok:
-                header_failed = False
-                break
+    if header_failed:
+        module.fail_json(msg='Unable to get remote image in ' +
+        str(retries_num) + ' attempts', **result)
 
-        if header_failed:
-            module.fail_json(msg='Unable to get remote image in ' + str(retries_num) + ' attempts', **result)
-
-        # Check we are the only instance
-        grep_out = 0
-        try:
-            grep_out = sh.grep(sh.df(), "/tmp/os_create_tmp", "-c")
-        except sh.ErrorReturnCode_1:
-            grep_out = 1
-        if grep_out == 0:
-            module.fail_json(msg="Can't mount temporary filesystem: is there another instance of module?", **result)
+    # Check we are the only instance
+    grep_out = 0
+    try:
+        grep_out = sh.grep(sh.df(), "/tmp/os_create_tmp", "-c")
+    except sh.ErrorReturnCode_1:
+        grep_out = 1
+    if grep_out == 0:
+        module.fail_json(
+        msg="Can't mount temporary filesystem: is there another instance of module?", **result)
         # Mounting temporary filesystem
-        try:
-            with sh.contrib.sudo:
-                out = sh.mount("tmpfs", "/tmp/os_create_tmp", t="tmpfs", \
-                        o="size="+str(1000000 + int(remote_image.headers['Content-length'])))
-        except sh.ErrorReturnCode:
-                print(out)
-                module.fail_json(msg="Failed to mount temporary filesystem", **result)
-        # Downloading image Content
-        with Bar('Downloading', max=int(remote_image.headers['Content-length']), suffix = '%(percent).1f%% - %(eta)ds') as bar:
-            for chunk in remote_image.iter_content(chunk_size = 1000000):
+    try:
+        with sh.contrib.sudo:
+            sh.mount("tmpfs", "/tmp/os_create_tmp", t="tmpfs",
+            o="size="+str(1000000 + int(remote_image.headers['Content-length'])))
+    except sh.ErrorReturnCode:
+        module.fail_json(msg="Failed to mount temporary filesystem", **result)
+    # Downloading image
+    with open(r'/tmp/os_create_tmp/'+image_name, "wb") as local_image:
+        with Bar('Downloading', max=int(remote_image.headers['Content-length']), suffix='%(percent).1f%% - %(eta)ds') as bar:
+            for chunk in remote_image.iter_content(chunk_size=1000):
                 bar.next(n=len(chunk))
                 local_image.write(chunk)
+    with Spinner("Wait... "):
+        time.sleep(20)
+    # Establishing connection to OpenStack
+    conn = openstack.connection.from_config(cloud="openstack")
 
+    # file = r'/tmp/os_create_tmp/'+image_name
+    # file = r'/home/winking-maniac/ansible/requirements.txt'
+
+    # Build the image attributes and construct the image.
+    image_attrs = {
+        'name': image_name,
+        'filename': r'/tmp/os_create_tmp/'+image_name,
+        'disk_format': 'qcow2',
+        'container_format': 'bare',
+    }
+
+    with Spinner("Uploading to OpenStack... "):
+        conn.image.create_image(**image_attrs)
+        # conn.image.stage_image(image, filename=r'/tmp/os_create_tmp/'+image_name)
     with sh.contrib.sudo:
         sh.umount("/tmp/os_create_tmp")
-
 
     result['original_message'] = module.params['url']
     result['message'] = 'Successfully download an image'
@@ -174,7 +194,7 @@ def run_module():
     # AnsibleModule.fail_json() to pass in the message and the result
 
     # if module.params['name'] == 'fail me':
-        # module.fail_json(msg='You requested this to fail', **result)
+    # module.fail_json(msg='You requested this to fail', **result)
 
     # in the event of a successful module execution, you will want to
     # simple AnsibleModule.exit_json(), passing the key/value results
