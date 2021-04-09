@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 # Copyright: (c) 2018, Terry Jones <terry.jones@example.org>
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
@@ -81,8 +81,23 @@ message:
 def run_module():
     # define available arguments/parameters a user can pass to the module
     module_args = dict(
-        url=dict(type='str', required=True),
-        retries_num=dict(type='int', required=False, default=5)
+        name=dict(type='str', required=True),
+        file=dict(type='str', required=False, default=""),
+        url=dict(type='str', required=False, default=""),
+        retries_num=dict(type='int', required=False, default=5),
+        id=dict(type='str', required=False, default=""),
+        protected=dict(type='bool', required=False, default=True),
+        public=dict(type='bool', required=False, default=False),
+        shared=dict(type='bool', required=False, default=False),
+        container_format=dict(type='str', required=False, default=""),
+        disk_format=dict(type='str', required=False, default=""),
+        min_disk=dict(type='str', required=False, default=""),
+        min_ram=dict(type='str', required=False, default=""),
+        volume=dict(type='str', required=False, default=""),
+        properties=dict(type='str', required=False, default=""),
+        tags=dict(type='str', required=False, default=""),
+        project=dict(type='str', required=False, default=""),
+        project_domain=dict(type='str', required=False, default=""),
     )
 
     # seed the result dict in the object
@@ -92,8 +107,6 @@ def run_module():
     # for consumption, for example, in a subsequent task
     result = dict(
         changed=False,
-        original_message='',
-        message=''
     )
 
     # the AnsibleModule object will be our abstraction working with Ansible
@@ -113,12 +126,48 @@ def run_module():
 
     # manipulate or modify the state as needed (this is going to be the
     # part where your module will do what it needs to do)
+    name = module.params['name']
+    file = module.params['file']
     url = module.params['url']
     retries_num = module.params['retries_num']
-    image_name = "image"
+    id = module.params['id']
+    protected = module.params['protected']
+    public = module.params['public']
+    shared = module.params['shared']
+    container_format = module.params['container_format']
+    disk_format = module.params['disk_format']
+    min_disk = module.params['min_disk']
+    min_ram = module.params['min_ram']
+    volume = module.params['volume']
+    properties = module.params['properties']
+    tags = module.params['tags']
+    project = module.params['project']
+    project_domain = module.params['project_domain']
+
+
+    # Build the image attributes
+    image_attrs = {
+        'name': name,
+    }
+    sources = 0
+    if file != '':
+        image_attrs['filename'] = file
+        sources += 1
+    if url != '':
+        image_attrs['filename'] = r'/tmp/os_create_tmp/'+name+'/'+name
+        sources += 1
+    if volume != '':
+        image_attrs['volume'] = volume
+        sources += 1
+    if sources != 1:
+        module.fail_json(msg="Exact one source should be determined from the list below: file, url, volume", **result)
+
+    if project_domain != "" and project == "":
+        module.fail_json(msg="Project domain should be determined with project", **result)
+
 
     try:
-        sh.mkdir("/tmp/os_create_tmp")
+        sh.mkdir("/tmp/os_create_tmp/"+image_name, "-p")
     except sh.ErrorReturnCode_1:
         pass
     except sh.ErrorReturnCode:
@@ -132,6 +181,7 @@ def run_module():
         if remote_image.ok:
             header_failed = False
             break
+        time.sleep(1)
 
     if header_failed:
         module.fail_json(msg='Unable to get remote image in ' +
@@ -140,48 +190,46 @@ def run_module():
     # Check we are the only instance
     grep_out = 0
     try:
-        grep_out = sh.grep(sh.df(), "/tmp/os_create_tmp", "-c")
+        grep_out = sh.grep(sh.df(), "/tmp/os_create_tmp/"+image_name, "-c")
     except sh.ErrorReturnCode_1:
         grep_out = 1
+    except:
+        module.fail_json(
+        msg="", **result)
     if grep_out == 0:
         module.fail_json(
-        msg="Can't mount temporary filesystem: is there another instance of module?", **result)
-        # Mounting temporary filesystem
+        msg="Can't mount temporary filesystem: is there another instance of module with same name?", **result)
+
+    # Mounting temporary filesystem
     try:
-        with sh.contrib.sudo:
-            sh.mount("tmpfs", "/tmp/os_create_tmp", t="tmpfs",
-            o="size="+str(1000000 + int(remote_image.headers['Content-length'])))
+        # with sh.contrib.sudo:
+        sh.mount("tmpfs", "/tmp/os_create_tmp/"+image_name, t="tmpfs",
+                o="size="+str(1000000 + int(remote_image.headers['Content-length'])))
+        # Downloading image
+        with open(r'/tmp/os_create_tmp/'+image_name+'/'+image_name, "wb") as local_image:
+            with Bar('Downloading', max=int(remote_image.headers['Content-length']), suffix='%(percent).1f%% - %(eta)ds') as bar:
+                for chunk in remote_image.iter_content(chunk_size=1000):
+                    bar.next(n=len(chunk))
+                    local_image.write(chunk)
+        # Establishing connection to OpenStack
+        try:
+            conn = openstack.connection.from_config(cloud="openstack")
+        except:
+            sh.umount("/tmp/os_create_tmp/"+image_name)
+            module.fail_json(msg='Unable to create image', **result)
+
+        # Upload the image.
+        with Spinner("Uploading to OpenStack... "):
+            try:
+                conn.image.create_image(**image_attrs)
+            except:
+                sh.umount(r"/tmp/os_create_tmp/"+image_name)
+                module.fail_json(msg='Unable to create image', **result)
+        # with sh.contrib.sudo:
     except sh.ErrorReturnCode:
+        sh.umount(r"/tmp/os_create_tmp/"+image_name)
         module.fail_json(msg="Failed to mount temporary filesystem", **result)
-    # Downloading image
-    with open(r'/tmp/os_create_tmp/'+image_name, "wb") as local_image:
-        with Bar('Downloading', max=int(remote_image.headers['Content-length']), suffix='%(percent).1f%% - %(eta)ds') as bar:
-            for chunk in remote_image.iter_content(chunk_size=1000):
-                bar.next(n=len(chunk))
-                local_image.write(chunk)
-    with Spinner("Wait... "):
-        time.sleep(20)
-    # Establishing connection to OpenStack
-    conn = openstack.connection.from_config(cloud="openstack")
-
-    # file = r'/tmp/os_create_tmp/'+image_name
-    # file = r'/home/winking-maniac/ansible/requirements.txt'
-
-    # Build the image attributes and construct the image.
-    image_attrs = {
-        'name': image_name,
-        'filename': r'/tmp/os_create_tmp/'+image_name,
-        'disk_format': 'qcow2',
-        'container_format': 'bare',
-    }
-
-    with Spinner("Uploading to OpenStack... "):
-        conn.image.create_image(**image_attrs)
-        # conn.image.stage_image(image, filename=r'/tmp/os_create_tmp/'+image_name)
-    with sh.contrib.sudo:
-        sh.umount("/tmp/os_create_tmp")
-
-    result['original_message'] = module.params['url']
+    # result['original_message'] = module.params['url']
     result['message'] = 'Successfully download an image'
 
     # use whatever logic you need to determine whether or not this module
