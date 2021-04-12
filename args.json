@@ -1,6 +1,20 @@
 {
     "ANSIBLE_MODULE_ARGS": {
-        "name": "test1", 
-        "url": "https://u-stena.ru/upload/iblock/760/760765d48381b0656d85da641704f8a7.jpg"
+        "name": "test111",
+        "url": "https://u-stena.ru/upload/iblock/760/760765d48381b0656d85da641704f8a7.jpg",
+        "public" : true,
+        "project" : "qwe",
+        "project_domain" : "default",
+        "protected" : true,
+        "disk_format" : "qcow2",
+        "min_ram" : "4000",
+        "min_disk" : "200",
+        "container_format" : "docker",
+        "properties" : {
+            "isp" : "ras"
+        },
+        "tags" : [
+            "test"
+        ]
     }
 }

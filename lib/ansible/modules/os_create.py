@@ -86,7 +86,7 @@ def run_module():
         url=dict(type='str', required=False, default=""),
         retries_num=dict(type='int', required=False, default=5),
         id=dict(type='str', required=False, default=""),
-        protected=dict(type='bool', required=False, default=True),
+        protected=dict(type='bool', required=False, default=False),
         public=dict(type='bool', required=False, default=False),
         shared=dict(type='bool', required=False, default=False),
         container_format=dict(type='str', required=False, default=""),
@@ -94,10 +94,10 @@ def run_module():
         min_disk=dict(type='str', required=False, default=""),
         min_ram=dict(type='str', required=False, default=""),
         volume=dict(type='str', required=False, default=""),
-        properties=dict(type='str', required=False, default=""),
-        tags=dict(type='str', required=False, default=""),
         project=dict(type='str', required=False, default=""),
         project_domain=dict(type='str', required=False, default=""),
+        properties=dict(type='dict', required=False, default=dict()),
+        tags=dict(type='list', required=False, default=list())
     )
 
     # seed the result dict in the object
@@ -165,72 +165,114 @@ def run_module():
     if project_domain != "" and project == "":
         module.fail_json(msg="Project domain should be determined with project", **result)
 
+    share_policy = 0
+    if shared is True:
+        image_attrs['shared'] = True
+        share_policy += 1
+    if public is True:
+        image_attrs['public'] = True
+        share_policy += 1
+    if share_policy != 1:
+        module.fail_json(msg="Exact one share policy should be determined from the list below: public, shared", **result)
 
-    try:
-        sh.mkdir("/tmp/os_create_tmp/"+image_name, "-p")
-    except sh.ErrorReturnCode_1:
-        pass
-    except sh.ErrorReturnCode:
-        module.fail_json(msg="Failed to create tmp directory", **result)
+    if id != '':
+        image_attrs['id'] = id
+    if protected != '':
+        image_attrs['protected'] = protected
+    if container_format != '':
+        image_attrs['container_format'] = container_format
+    if disk_format != '':
+        image_attrs['disk_format'] = disk_format
+    if min_disk != '':
+        image_attrs['min_disk'] = min_disk
+    if min_ram != '':
+        image_attrs['min_ram'] = min_ram
+    if disk_format != '':
+        image_attrs['disk_format'] = disk_format
+    if project != '':
+        image_attrs['project'] = project
+    if project_domain != '':
+        image_attrs['project_domain'] = project_domain
+    if module.params['properties'] != "":
+        image_attrs['properties'] = module.params['properties']
+    if module.params['tags'] != "":
+        image_attrs['tags'] = module.params['tags']
 
-    # Try getting header of remote image
 
-    header_failed = True
-    for i in range(retries_num):
-        remote_image = requests.get(url, stream=True)
-        if remote_image.ok:
-            header_failed = False
-            break
-        time.sleep(1)
+    if url != "":
 
-    if header_failed:
-        module.fail_json(msg='Unable to get remote image in ' +
-        str(retries_num) + ' attempts', **result)
-
-    # Check we are the only instance
-    grep_out = 0
-    try:
-        grep_out = sh.grep(sh.df(), "/tmp/os_create_tmp/"+image_name, "-c")
-    except sh.ErrorReturnCode_1:
-        grep_out = 1
-    except:
-        module.fail_json(
-        msg="", **result)
-    if grep_out == 0:
-        module.fail_json(
-        msg="Can't mount temporary filesystem: is there another instance of module with same name?", **result)
-
-    # Mounting temporary filesystem
-    try:
-        # with sh.contrib.sudo:
-        sh.mount("tmpfs", "/tmp/os_create_tmp/"+image_name, t="tmpfs",
-                o="size="+str(1000000 + int(remote_image.headers['Content-length'])))
-        # Downloading image
-        with open(r'/tmp/os_create_tmp/'+image_name+'/'+image_name, "wb") as local_image:
-            with Bar('Downloading', max=int(remote_image.headers['Content-length']), suffix='%(percent).1f%% - %(eta)ds') as bar:
-                for chunk in remote_image.iter_content(chunk_size=1000):
-                    bar.next(n=len(chunk))
-                    local_image.write(chunk)
-        # Establishing connection to OpenStack
         try:
-            conn = openstack.connection.from_config(cloud="openstack")
-        except:
-            sh.umount("/tmp/os_create_tmp/"+image_name)
-            module.fail_json(msg='Unable to create image', **result)
+            sh.mkdir("/tmp/os_create_tmp/"+name, "-p")
+        except sh.ErrorReturnCode_1:
+            pass
+        except sh.ErrorReturnCode:
+            module.fail_json(msg="Failed to create tmp directory", **result)
 
-        # Upload the image.
+        # Try getting header of remote image
+
+        header_failed = True
+        for i in range(retries_num):
+            remote_image = requests.get(url, stream=True)
+            if remote_image.ok:
+                header_failed = False
+                break
+            time.sleep(1)
+
+        if header_failed:
+            module.fail_json(msg='Unable to get remote image in ' +
+            str(retries_num) + ' attempts', **result)
+
+        # Check we are the only instance
+        grep_out = 0
+        try:
+            grep_out = sh.grep(sh.df(), "/tmp/os_create_tmp/"+name, "-c")
+        except sh.ErrorReturnCode_1:
+            grep_out = 1
+        except:
+            module.fail_json(
+            msg="", **result)
+        if grep_out == 0:
+            module.fail_json(
+            msg="Can't mount temporary filesystem: is there another instance of module with same image name?", **result)
+
+        # Mounting temporary filesystem
+        try:
+            # with sh.contrib.sudo:
+            sh.mount("tmpfs", "/tmp/os_create_tmp/"+name, t="tmpfs",
+                    o="size="+str(1000000 + int(remote_image.headers['Content-length'])))
+            # Downloading image
+            with open(r'/tmp/os_create_tmp/'+name+'/'+name, "wb") as local_image:
+                with Bar('Downloading', max=int(remote_image.headers['Content-length']), suffix='%(percent).1f%% - %(eta)ds') as bar:
+                    for chunk in remote_image.iter_content(chunk_size=1000):
+                        bar.next(n=len(chunk))
+                        local_image.write(chunk)
+            # Establishing connection to OpenStack
+            try:
+                conn = openstack.connection.from_config(cloud="openstack")
+            except:
+                sh.umount("/tmp/os_create_tmp/"+name)
+                module.fail_json(msg='Unable to connect to OpenStack', **result)
+
+            # Upload the image.
+            with Spinner("Uploading to OpenStack... "):
+                try:
+                    conn.image.create_image(**image_attrs)
+                except Exception as e:
+                    sh.umount(r"/tmp/os_create_tmp/"+name)
+                    module.fail_json(msg='Unable to create image: '+str(e), **result)
+            # with sh.contrib.sudo:
+        except sh.ErrorReturnCode:
+            sh.umount(r"/tmp/os_create_tmp/"+name)
+            module.fail_json(msg="Failed to mount temporary filesystem", **result)
+    else:
         with Spinner("Uploading to OpenStack... "):
             try:
                 conn.image.create_image(**image_attrs)
-            except:
-                sh.umount(r"/tmp/os_create_tmp/"+image_name)
-                module.fail_json(msg='Unable to create image', **result)
-        # with sh.contrib.sudo:
-    except sh.ErrorReturnCode:
-        sh.umount(r"/tmp/os_create_tmp/"+image_name)
-        module.fail_json(msg="Failed to mount temporary filesystem", **result)
+            except Exception as e:
+                module.fail_json(msg='Unable to create image: ' + str(e), **result)
+
     # result['original_message'] = module.params['url']
-    result['message'] = 'Successfully download an image'
+    result['message'] = 'Successfully uploaded an image'
 
     # use whatever logic you need to determine whether or not this module
     # made any modifications to your target
